@@ -4,7 +4,6 @@ type Proposition = { name: string; args: Pattern[]; values: Pattern[] };
 
 type Fact = { name: string; args: Data[]; values: Data[] };
 
-
 function matchFact(
   substitution: Substitution,
   proposition: Proposition,
@@ -35,7 +34,7 @@ function matchFact(
 
 type Database = Fact[];
 
-function matchAll(
+export function matchAll(
   substitution: Substitution,
   proposition: Proposition,
   db: Database,
