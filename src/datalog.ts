@@ -1,8 +1,14 @@
-import { Substitution, Pattern, Data, match } from './terms';
+import { Substitution, Pattern, Data, match, eqData } from './terms';
 
 type Proposition = { name: string; args: Pattern[]; values: Pattern[] };
 
 type Fact = { name: string; args: Data[]; values: Data[] };
+
+/**
+ * A Rule is
+ * (A /\ B /\ C) => ( (D /\ E) \/ G \/ (G /\ H) )
+ */
+type Rule = { premises: Proposition[]; conclusion: Proposition[][] };
 
 function matchFact(
   substitution: Substitution,
@@ -43,3 +49,19 @@ export function matchAll(
     .map((data) => matchFact(substitution, proposition, data))
     .filter((x): x is Substitution => x !== null);
 }
+
+function check(fact: Fact, db: Database): 'redundant' | 'contradictory' | 'new' {
+  for (const { name, args, values } of db) {
+    if (
+      fact.name === name &&
+      fact.args.length === args.length &&
+      fact.values.length === values.length &&
+      fact.args.every((arg, i) => eqData(arg, args[i]))
+    ) {
+      return fact.values.every((val, i) => eqData(val, values[i])) ? 'redundant' : 'contradictory';
+    }
+  }
+  return 'new';
+}
+
+funct

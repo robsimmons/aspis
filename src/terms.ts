@@ -11,6 +11,15 @@ export type Data =
 
 export type Substitution = { [varName: string]: Data };
 
+export function eqData(a: Data, b: Data): boolean {
+    if (a.type === 'const' && b.type === 'const') {
+        return a.name === b.name && a.args.length === b.args.length && a.args.every((arg, i) => eqData(arg, b.args[i]))
+    }
+    if (a.type === 'int' && b.type === 'int') return a.value === b.value;
+    if (a.type === 'string' && b.type === 'string') return a.value === b.value;
+    return false;
+}
+
 export function match(
   substitution: Substitution,
   pattern: Pattern,
