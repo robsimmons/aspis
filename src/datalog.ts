@@ -1,4 +1,4 @@
-import { Substitution, Pattern, Data, match, apply, equal } from './terms';
+import { Substitution, Pattern, Data, match, apply, equal, termToString } from './terms';
 
 export type Proposition = { name: string; args: Pattern[]; values: Pattern[] };
 // type Rule = { premises: Proposition[]; conclusions: Proposition[][] };
@@ -67,6 +67,31 @@ export function matchFact(
   return substitution;
 }
 
+export function propToString(p: Proposition) {
+  if (p.values.length === 0) {
+    return `${p.name}${p.args.map((arg) => ` ${termToString(arg)}`).join('')}`;
+  }
+  return `${p.name}${p.args.map((arg) => ` ${termToString(arg)}`).join('')} =${p.values.map(
+    (value) => ` ${termToString(value)}`,
+  )}`;
+}
+
+function factToString(f: Fact): string {
+  return propToString(f);
+}
+
+function partialRuleToString(f: PartialRule): string {
+  return `${f.name}{ ${Object.entries(f.args)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([varName, term]) => `${termToString(term)}/${varName}`)
+    .join(', ')} }`;
+}
+
+export function dbItemToString(i: DbItem) {
+  if (i.type === 'Fact') return factToString(i);
+  return partialRuleToString(i);
+}
+
 export function step(
   rules: InternalRule[],
   conclusions: { [name: string]: InternalConclusion },
@@ -94,7 +119,7 @@ export function step(
           break;
       }
     }
-    if (redundantPossibilities) {
+    if (redundantPossibilities || !conclusion.exhaustive) {
       dbs.push(db);
     }
     return dbs;
@@ -110,12 +135,13 @@ export function step(
             value: substitution[varName],
           }));
           for (const item of db.partialRules) {
+            console.log(`${item.name} ${rule.name}`);
             if (
               item.name === rule.name &&
               shared.every(({ varName, value }) => equal(item.args[varName], value))
             ) {
               const extendedSubstitution = { ...substitution };
-              for (const varName of rule.new) {
+              for (const varName of rule.independent) {
                 extendedSubstitution[varName] = item.args[varName];
               }
               newPartialRules.push(
@@ -157,7 +183,6 @@ export function step(
   }
 
   for (let newItem of newPartialRules) {
-    console.log(newItem);
     if (
       !db.partialRules.some(
         (item) =>
@@ -165,9 +190,11 @@ export function step(
           Object.entries(item.args).every(([varName, data]) => equal(newItem.args[varName], data)),
       )
     ) {
-      console.log('Item not in db already!');
-      db.partialRules.push(newItem);
-      db.queue.push(newItem);
+      console.log(`ADD: ${dbItemToString(newItem)}`);
+      db.partialRules = [...db.partialRules, newItem];
+      db.queue = [...db.queue, newItem];
+    } else {
+      console.log(`IGN: ${dbItemToString(newItem)}`);
     }
   }
 
@@ -178,30 +205,37 @@ export function evaluateFactAgainstDatabase(
   db: Database,
   newFact: Fact,
 ): { type: 'inconsistent' } | { type: 'redundant' } | { type: 'extend'; db: Database } {
+  console.log(`** EVALUATING ${factToString(newFact)}`);
   for (const fact of db.facts) {
+    console.log(`   AGAINST ${factToString(fact)}`);
     if (
       fact.name === newFact.name &&
       fact.args.length === newFact.args.length &&
-      fact.values.length === newFact.args.length &&
+      fact.values.length === newFact.values.length &&
       fact.args.every((arg, i) => equal(arg, newFact.args[i]))
     ) {
+      console.log('MATCH');
       return fact.values.every((value, i) => equal(value, newFact.values[i]))
         ? { type: 'redundant' }
         : { type: 'inconsistent' };
     }
   }
 
+  console.log(`** EVALUATING ${factToString(newFact)} (for redundancy)`);
   for (const fact of db.uninteresting) {
+    console.log(`   AGAINST ${factToString(fact)}`);
     if (
       fact.name === newFact.name &&
       fact.args.length === newFact.args.length &&
-      fact.values.length === newFact.args.length &&
+      fact.values.length === newFact.values.length &&
       fact.args.every((arg, i) => equal(arg, newFact.args[i])) &&
       fact.values.every((arg, i) => equal(arg, newFact.values[i]))
     ) {
+      console.log('MATCH');
       return { type: 'redundant' };
     }
   }
+  console.log(`** NO MATCH`);
   return {
     type: 'extend',
     db: {
