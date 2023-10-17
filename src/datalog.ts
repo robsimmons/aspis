@@ -1,65 +1,54 @@
 import { Substitution, Pattern, Data, match, apply, equal, termToString } from './terms';
 
-export type Proposition = { name: string; args: Pattern[]; values: Pattern[] };
-// type Rule = { premises: Proposition[]; conclusions: Proposition[][] };
+export type Proposition = { type: 'Proposition'; name: string; args: Pattern[] };
+export type Inequality = { type: 'Inequality'; a: Pattern; b: Pattern };
 
-export type InternalRule = {
-  name: string;
-  nextName: string[];
-  independent: string[];
+export type InternalPartialRule = {
+  next: string[];
   shared: string[];
-  new: string[];
-  premise: Proposition;
+  premise: Proposition | Inequality;
 };
 
-export type InternalConclusion = {
-  mutuallyExclusiveConclusions: Proposition[];
-  exhaustive: boolean;
-};
+export type InternalConclusion =
+  | {
+      type: 'NewFact';
+      name: string;
+      args: Pattern[];
+      values: Pattern[];
+      exhaustive: boolean;
+    }
+  | { type: 'Contradiction' };
 
 export interface Fact {
   type: 'Fact';
   name: string;
   args: Data[];
-  values: Data[];
 }
 
-export interface PartialRule {
-  type: 'PartialRule';
+export interface Prefix {
+  type: 'Prefix';
   name: string;
   args: Substitution;
 }
 
-export type DbItem = Fact | PartialRule;
-
 export interface Database {
-  facts: Fact[];
-  partialRules: PartialRule[];
-  uninteresting: Fact[];
-  queue: DbItem[];
+  facts: { [predicate: string]: Data[][] };
+  factValues: { [prop: string]: { type: 'is'; value: Data } | { type: 'is not'; value: Data[] } };
+  prefixes: { [name: string]: Substitution[] };
+  queue: (Fact | Prefix)[];
 }
 
-export function matchFact(
+function matchPatterns(
   substitution: Substitution,
-  proposition: Proposition,
-  fact: Fact,
+  pattern: Pattern[],
+  data: Data[],
 ): null | Substitution {
-  if (
-    proposition.name !== fact.name ||
-    proposition.args.length !== fact.args.length ||
-    proposition.values.length !== fact.values.length
-  ) {
+  if (pattern.length !== data.length) {
     return null;
   }
 
-  for (let i = 0; i < proposition.args.length; i++) {
-    const candidate = match(substitution, proposition.args[i], fact.args[i]);
-    if (candidate === null) return null;
-    substitution = candidate;
-  }
-
-  for (let i = 0; i < proposition.values.length; i++) {
-    const candidate = match(substitution, proposition.values[i], fact.values[i]);
+  for (let i = 0; i < pattern.length; i++) {
+    const candidate = match(substitution, pattern[i], data[i]);
     if (candidate === null) return null;
     substitution = candidate;
   }
@@ -67,239 +56,234 @@ export function matchFact(
   return substitution;
 }
 
-export function propToString(p: Proposition) {
-  if (p.values.length === 0) {
-    return `${p.name}${p.args.map((arg) => ` ${termToString(arg)}`).join('')}`;
+function matchFact(substitution: Substitution, proposition: Proposition, fact: Fact) {
+  if (proposition.name !== fact.name) {
+    return null;
   }
-  return `${p.name}${p.args.map((arg) => ` ${termToString(arg)}`).join('')} =${p.values.map(
-    (value) => ` ${termToString(value)}`,
-  )}`;
+  return matchPatterns(substitution, proposition.args, fact.args);
+}
+function propToString(p: Proposition) {
+  const args = p.args
+    .slice(0, p.args.length - 1)
+    .map((arg) => ` ${termToString(arg)}`)
+    .join('');
+  const value = p.args[p.args.length - 1];
+  return value.type === 'triv' ? `${p.name}${args}` : `${p.name}${args} is ${termToString(value)}`;
 }
 
-function factToString(f: Fact): string {
-  return propToString(f);
+function factToString(fact: Fact): string {
+  return propToString({ ...fact, type: 'Proposition' });
 }
 
-function partialRuleToString(f: PartialRule): string {
-  return `${f.name}{ ${Object.entries(f.args)
+function substitutionToString(args: Substitution): string {
+  if (Object.keys(args).length === 0) return `{}`;
+  return `{ ${Object.entries(args)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([varName, term]) => `${termToString(term)}/${varName}`)
     .join(', ')} }`;
 }
 
-export function dbItemToString(i: DbItem) {
-  if (i.type === 'Fact') return factToString(i);
-  return partialRuleToString(i);
+function prefixToString(prefix: Prefix): string {
+  return `${prefix.name}${substitutionToString(prefix.args)}`;
+}
+
+function dbItemToString(item: Fact | Prefix) {
+  if (item.type === 'Fact') return factToString(item);
+  return prefixToString(item);
+}
+
+function stepConclusion(conclusion: InternalConclusion, prefix: Prefix, db: Database): Database[] {
+  if (conclusion.type === 'Contradiction') return [];
+  const args = conclusion.args.map((arg) => apply(prefix.args, arg));
+  let values = conclusion.values.map((value) => apply(prefix.args, value));
+
+  const key = `${conclusion.name}${args.map((arg) => ` ${termToString(arg)}`).join('')}`;
+  const knownValue = db.factValues[key];
+
+  if (knownValue?.type === 'is') {
+    // Either this conclusion will be redundant or cause a contradiction
+    if (conclusion.exhaustive && !values.some((value) => equal(value, knownValue.value))) {
+      return [];
+    }
+    return [db];
+  } else {
+    // Just have to make sure options are not already excluded from this branch
+    let isNot = knownValue ? knownValue.value : [];
+    values = values.filter((value) => !isNot.some((excludedValue) => equal(value, excludedValue)));
+
+    // If this conclusion is nonexhaustive, add any new concrete outcomes to the
+    // nonexhaustive branch
+    isNot = [...isNot, ...values];
+
+    const nonExhaustive: Database[] = conclusion.exhaustive
+      ? []
+      : [
+          {
+            ...db,
+            factValues: { ...db.factValues, [key]: { type: 'is not', value: isNot } },
+          },
+        ];
+
+    const existingFacts = db.facts[conclusion.name] || [];
+    return nonExhaustive.concat(
+      values.map<Database>((value) => ({
+        ...db,
+        facts: { ...db.facts, [conclusion.name]: [...existingFacts, [...args, value]] },
+        factValues: { ...db.factValues, [key]: { type: 'is', value } },
+        queue: [...db.queue, { type: 'Fact', name: conclusion.name, args: [...args, value] }],
+      })),
+    );
+  }
+}
+
+export function insertFact(name: string, args: Data[], value: Data, db: Database): Database {
+  const key = `${name}${args.map((arg) => ` ${termToString(arg)}`).join('')}`;
+  const existingFacts = db.facts[name] || [];
+  return {
+    ...db,
+    facts: { ...db.facts, [name]: [...existingFacts, [...args, value]] },
+    factValues: { ...db.factValues, [key]: { type: 'is', value } },
+    queue: [...db.queue, { type: 'Fact', name, args: [...args, value] }],
+  };
+}
+
+function stepPrefix(
+  rules: { [name: string]: InternalPartialRule },
+  prefix: Prefix,
+  db: Database,
+): Database {
+  const rule = rules[prefix.name];
+  if (!rule) {
+    throw new Error(`Internal: expected rule '${prefix.name}' in rules.`);
+  }
+
+  const newPrefixes: Prefix[] = [];
+
+  if (rule.premise.type === 'Inequality') {
+    const a = apply(prefix.args, rule.premise.a);
+    const b = apply(prefix.args, rule.premise.b);
+
+    if (!equal(a, b)) {
+      newPrefixes.push(
+        ...rule.next.map<Prefix>((next) => ({
+          type: 'Prefix',
+          name: next,
+          args: prefix.args,
+        })),
+      );
+    }
+  }
+
+  if (rule.premise.type === 'Proposition') {
+    const knownFacts = db.facts[rule.premise.name] || [];
+
+    for (const fact of knownFacts) {
+      const candidate = matchPatterns(prefix.args, rule.premise.args, fact);
+      if (candidate !== null) {
+        newPrefixes.push(
+          ...rule.next.map<Prefix>((next) => ({
+            type: 'Prefix',
+            name: next,
+            args: candidate,
+          })),
+        );
+      }
+    }
+  }
+
+  return extendDbWithPrefixes(newPrefixes, db);
+}
+
+function stepFact(
+  rules: { [name: string]: InternalPartialRule },
+  fact: Fact,
+  db: Database,
+): Database {
+  const newPrefixes: Prefix[] = [];
+  for (const ruleName of Object.keys(rules)) {
+    const rule = rules[ruleName];
+    if (rule.premise.type === 'Proposition') {
+      const substitution = matchFact({}, rule.premise, fact);
+      if (substitution !== null) {
+        for (const item of db.prefixes[ruleName] || []) {
+          console.log(ruleName);
+          console.log(item);
+          console.log(substitution);
+          console.log(rule.shared);
+          if (rule.shared.every((varName) => equal(substitution[varName], item[varName]))) {
+            newPrefixes.push(
+              ...rule.next.map<Prefix>((next) => ({
+                type: 'Prefix',
+                name: next,
+                args: { ...substitution, ...item },
+              })),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return extendDbWithPrefixes(newPrefixes, db);
+}
+
+function extendDbWithPrefixes(newPrefixList: Prefix[], db: Database): Database {
+  const newPrefixMap: { [name: string]: Substitution[] } = {};
+  for (const newPrefix of newPrefixList) {
+    if (!newPrefixMap[newPrefix.name]) {
+      newPrefixMap[newPrefix.name] = db.prefixes[newPrefix.name]?.slice(0) || [];
+    }
+    if (
+      !newPrefixMap[newPrefix.name].some((existingPrefixArgs) =>
+        Object.keys(existingPrefixArgs).every((varName) =>
+          equal(existingPrefixArgs[varName], newPrefix.args[varName]),
+        ),
+      )
+    ) {
+      newPrefixMap[newPrefix.name].push(newPrefix.args);
+    }
+  }
+  return {
+    ...db,
+    prefixes: { ...db.prefixes, ...newPrefixMap },
+    queue: [...db.queue, ...newPrefixList],
+  };
+}
+
+export function dbToString(db: Database) {
+  return `Queue: ${db.queue.map((item) => dbItemToString(item)).join(', ')}
+Prefixes: 
+${Object.keys(db.prefixes)
+  .sort()
+  .map((key) => `${key}: ${db.prefixes[key].map(substitutionToString).join(', ')}`)
+  .join('\n')}
+Facts:
+${Object.keys(db.factValues)
+  .sort()
+  .map((fact) => {
+    const entry = db.factValues[fact];
+    if (entry.type === 'is') {
+      return entry.value.type === 'triv' ? fact : `${fact} is ${termToString(entry.value)}`;
+    } else {
+      return `${fact} is not ${entry.value.map(termToString).join(' or ')}`;
+    }
+  })
+  .join('\n')}
+`;
 }
 
 export function step(
-  rules: InternalRule[],
+  partialRules: { [name: string]: InternalPartialRule },
   conclusions: { [name: string]: InternalConclusion },
   db: Database,
 ): Database[] {
-  const newPartialRules: PartialRule[] = [];
   const [current, ...rest] = db.queue;
   db = { ...db, queue: rest };
-
-  if (current.type === 'PartialRule' && conclusions[current.name]) {
-    let redundantPossibilities = false;
-    const dbs: Database[] = [];
-    const conclusion = conclusions[current.name];
-    for (const proposition of conclusion.mutuallyExclusiveConclusions) {
-      const fact = applyProposition(current.args, proposition);
-      const result = evaluateFactAgainstDatabase(db, fact);
-      switch (result.type) {
-        case 'inconsistent':
-          break;
-        case 'redundant':
-          redundantPossibilities = true;
-          break;
-        case 'extend':
-          dbs.push(result.db);
-          break;
-      }
-    }
-    if (redundantPossibilities || !conclusion.exhaustive) {
-      dbs.push(db);
-    }
-    return dbs;
-  }
-
-  switch (current.type) {
-    case 'Fact': {
-      for (const rule of rules) {
-        const substitution = matchFact({}, rule.premise, current);
-        if (substitution !== null) {
-          const shared = rule.shared.map((varName) => ({
-            varName,
-            value: substitution[varName],
-          }));
-          for (const item of db.partialRules) {
-            console.log(`${item.name} ${rule.name}`);
-            if (
-              item.name === rule.name &&
-              shared.every(({ varName, value }) => equal(item.args[varName], value))
-            ) {
-              const extendedSubstitution = { ...substitution };
-              for (const varName of rule.independent) {
-                extendedSubstitution[varName] = item.args[varName];
-              }
-              newPartialRules.push(
-                ...rule.nextName.map<PartialRule>((next) => ({
-                  type: 'PartialRule',
-                  name: next,
-                  args: extendedSubstitution,
-                })),
-              );
-            }
-          }
-        }
-      }
-      break;
-    }
-    case 'PartialRule': {
-      for (const rule of rules) {
-        if (current.name === rule.name) {
-          console.log(`Matched ${current.name}`);
-          for (const item of db.facts) {
-            if (item.name === rule.premise.name && item.args.length === rule.premise.args.length) {
-              console.log(`Fact ${JSON.stringify(item)}`);
-              const extendedSubstitution = matchFact(current.args, rule.premise, item);
-              console.log(extendedSubstitution);
-              if (extendedSubstitution !== null) {
-                newPartialRules.push(
-                  ...rule.nextName.map<PartialRule>((next) => ({
-                    type: 'PartialRule',
-                    name: next,
-                    args: extendedSubstitution,
-                  })),
-                );
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for (let newItem of newPartialRules) {
-    if (
-      !db.partialRules.some(
-        (item) =>
-          newItem.name === item.name &&
-          Object.entries(item.args).every(([varName, data]) => equal(newItem.args[varName], data)),
-      )
-    ) {
-      console.log(`ADD: ${dbItemToString(newItem)}`);
-      db.partialRules = [...db.partialRules, newItem];
-      db.queue = [...db.queue, newItem];
-    } else {
-      console.log(`IGN: ${dbItemToString(newItem)}`);
-    }
-  }
-
-  return [db];
-}
-
-export function evaluateFactAgainstDatabase(
-  db: Database,
-  newFact: Fact,
-): { type: 'inconsistent' } | { type: 'redundant' } | { type: 'extend'; db: Database } {
-  console.log(`** EVALUATING ${factToString(newFact)}`);
-  for (const fact of db.facts) {
-    console.log(`   AGAINST ${factToString(fact)}`);
-    if (
-      fact.name === newFact.name &&
-      fact.args.length === newFact.args.length &&
-      fact.values.length === newFact.values.length &&
-      fact.args.every((arg, i) => equal(arg, newFact.args[i]))
-    ) {
-      console.log('MATCH');
-      return fact.values.every((value, i) => equal(value, newFact.values[i]))
-        ? { type: 'redundant' }
-        : { type: 'inconsistent' };
-    }
-  }
-
-  console.log(`** EVALUATING ${factToString(newFact)} (for redundancy)`);
-  for (const fact of db.uninteresting) {
-    console.log(`   AGAINST ${factToString(fact)}`);
-    if (
-      fact.name === newFact.name &&
-      fact.args.length === newFact.args.length &&
-      fact.values.length === newFact.values.length &&
-      fact.args.every((arg, i) => equal(arg, newFact.args[i])) &&
-      fact.values.every((arg, i) => equal(arg, newFact.values[i]))
-    ) {
-      console.log('MATCH');
-      return { type: 'redundant' };
-    }
-  }
-  console.log(`** NO MATCH`);
-  return {
-    type: 'extend',
-    db: {
-      ...db,
-      facts: [...db.facts, newFact],
-      queue: [...db.queue, newFact],
-    },
-  };
-}
-
-export function applyProposition(substitution: Substitution, proposition: Proposition): Fact {
-  return {
-    type: 'Fact',
-    name: proposition.name,
-    args: proposition.args.map((arg) => apply(substitution, arg)),
-    values: proposition.values.map((arg) => apply(substitution, arg)),
-  };
-}
-
-/*
-
-
-
-
-type Database = Fact[];
-
-export function matchAll(
-  substitution: Substitution,
-  proposition: Proposition,
-  db: Database,
-): Substitution[] {
-  return db
-    .map((data) => matchFact(substitution, proposition, data))
-    .filter((x): x is Substitution => x !== null);
-}
-
-
-export function extendFacts(
-  db: Database,
-  newFacts: Fact[],
-): { type: 'inconsistent' } | { type: 'redundant' } | { type: 'extend'; db: Database } {
-  for (const newFact of newFacts) {
-    const extension = extendFact(db, newFact);
-    switch (extension.type) {
-      case 'inconsistent':
-        return { type: 'inconsistent' };
-      case 'redundant':
-        break;
-      case 'extend':
-        db = extension.db;
-    }
-  }
-  return { type: 'extend', db };
-}
-*/
-
-/*
-export function applyRule(db: Database, rule: Rule) {
-  let substs: Substitution[] = [{}];
-  for (const premise of rule.premises) {
-    substs = substs.flatMap((substitution) => matchAll(substitution, premise, db));
-  }
-  for (const substitution in substs) {
-
+  if (current.type === 'Fact') {
+    return [stepFact(partialRules, current, db)];
+  } else if (conclusions[current.name]) {
+    return stepConclusion(conclusions[current.name], current, db);
+  } else {
+    return [stepPrefix(partialRules, current, db)];
   }
 }
-*/

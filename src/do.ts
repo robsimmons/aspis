@@ -1,42 +1,70 @@
 import {
   Database,
-  DbItem,
   Fact,
   InternalConclusion,
-  InternalRule,
-  PartialRule,
+  InternalPartialRule,
   Proposition,
-  dbItemToString,
+  dbToString,
+  insertFact,
   step,
 } from './datalog';
 import { parseData, parsePattern } from './terms';
-
-console.log('Hi');
-
-function prop(name: string, args: string[], values: string[]): Proposition {
-  return { name, args: args.map(parsePattern), values: values.map(parsePattern) };
-}
-
-function fact(name: string, args: string[], values: string[]): Fact {
-  return { type: 'Fact', name, args: args.map(parseData), values: values.map(parseData) };
-}
-
-function dbToString(db: Database): string {
-  return `Queue: ${db.queue.map((item) => dbItemToString(item)).join(', ')}
-Database: ${([] as DbItem[])
-    .concat(db.facts)
-    .concat(db.partialRules)
-    .map((item: DbItem) => dbItemToString(item))
-    .join(', ')}}
-Uninteresting: ${db.uninteresting.map((item) => dbItemToString(item)).join(', ')}
-`;
-}
+import readline from 'readline';
 
 type CompiledRule = {
-  seed: PartialRule;
-  premise: InternalRule[];
+  seed: string;
+  premise: { [name: string]: InternalPartialRule };
   conclusion: { [name: string]: InternalConclusion };
 };
+
+interface Example {
+  rules: { [name: string]: InternalPartialRule };
+  conclusions: { [r: string]: InternalConclusion };
+  db: Database;
+}
+
+function prop(name: string, args: string[], value: string = '()'): Proposition {
+  return { type: 'Proposition', name, args: [...args.map(parsePattern), parsePattern(value)] };
+}
+
+function fact(name: string, args: string[], value: string = '()'): Fact {
+  return { type: 'Fact', name, args: [...args.map(parseData), parseData(value)] };
+}
+
+function conc(
+  name: string,
+  args: string[],
+  values: string[] = ['()'],
+  exhaustive: boolean = true,
+): InternalConclusion {
+  return {
+    type: 'NewFact',
+    name,
+    args: args.map(parsePattern),
+    values: values.map(parsePattern),
+    exhaustive,
+  };
+}
+
+function makeExample(rules: CompiledRule[], facts: Fact[]): Example {
+  const example: Example = {
+    rules: {},
+    conclusions: {},
+    db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
+  };
+  for (const { seed, premise, conclusion } of rules) {
+    example.rules = { ...example.rules, ...premise };
+    example.conclusions = { ...example.conclusions, ...conclusion };
+    example.db.prefixes[seed] = [{}];
+    example.db.queue = [...example.db.queue, { type: 'Prefix', name: seed, args: {} }];
+  }
+  for (const fact of facts) {
+    const args = fact.args.slice(0, fact.args.length - 1);
+    const value = fact.args[fact.args.length - 1];
+    example.db = insertFact(fact.name, args, value, example.db);
+  }
+  return example;
+}
 
 /*
  *
@@ -44,278 +72,260 @@ type CompiledRule = {
  *
  */
 
-// `path X Y :- edge X Y`
+// path X Y :- edge X Y
 const a: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'a1', args: {} },
-  premise: [
-    {
-      name: 'a1',
-      nextName: ['a2'],
-      independent: [],
+  seed: 'a1',
+  premise: {
+    a1: {
+      premise: prop('edge', ['X', 'Y']),
       shared: [],
-      new: ['X', 'Y'],
-      premise: prop('edge', ['X', 'Y'], []),
+      next: ['a2'],
     },
-  ],
+  },
   conclusion: {
-    a2: {
-      mutuallyExclusiveConclusions: [prop('path', ['X', 'Y'], [])],
-      exhaustive: true,
-    },
+    a2: conc('path', ['X', 'Y']),
   },
 };
 
-// `path X Z :- edge X Y, path Y Z`
+// path X Z :- edge X Y, path Y Z
 const b: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'b1', args: {} },
-  premise: [
-    {
-      name: 'b1',
-      nextName: ['b2'],
-      independent: [],
+  seed: 'b1',
+  premise: {
+    b1: {
+      premise: prop('edge', ['X', 'Y']),
       shared: [],
-      new: ['X', 'Y'],
-      premise: prop('edge', ['X', 'Y'], []),
+      next: ['b2'],
     },
-    {
-      name: 'b2',
-      nextName: ['b3'],
-      independent: ['X'],
+    b2: {
+      premise: prop('path', ['Y', 'Z']),
       shared: ['Y'],
-      new: ['Z'],
-      premise: prop('path', ['Y', 'Z'], []),
+      next: ['b3'],
     },
-  ],
+  },
   conclusion: {
-    b3: {
-      mutuallyExclusiveConclusions: [prop('path', ['X', 'Z'], [])],
-      exhaustive: true,
-    },
+    b3: conc('path', ['X', 'Z']),
   },
 };
 
-interface Example {
-  rules: InternalRule[];
-  conclusions: { [r: string]: InternalConclusion };
-  db: Database;
-}
-
-export const edgeExample: Example = {
-  rules: [...a.premise, ...b.premise],
-  conclusions: { ...a.conclusion, ...b.conclusion },
-  db: {
-    facts: [
-      fact('edge', ['a', 'b'], []),
-      fact('edge', ['b', 'c'], []),
-      fact('edge', ['c', 'd'], []),
-      fact('edge', ['d', 'e'], []),
-      fact('edge', ['c', 'a'], []),
-    ],
-    partialRules: [a.seed, b.seed],
-    uninteresting: [],
-    queue: [a.seed, b.seed],
-  },
-};
+export const edgeExample = makeExample(
+  [a, b],
+  [
+    fact('edge', ['a', 'b']),
+    fact('edge', ['b', 'c']),
+    fact('edge', ['c', 'd']),
+    fact('edge', ['d', 'e']),
+    fact('edge', ['e', 'f']),
+    fact('edge', ['e', 'c']),
+  ],
+);
 
 /*
  *
- * EXAMPLE 2: mutual exclusion
+ * EXAMPLE 2: some mutual exclusion
  *
  */
 
 // { a, b, c } :- !p.
 const r1: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'a1', args: {} },
-  premise: [
-    {
-      name: 'a1',
-      nextName: ['a2', 'a3', 'a4'],
-      independent: [],
+  seed: 'a1',
+  premise: {
+    a1: {
+      premise: prop('p', [], 'false'),
       shared: [],
-      new: [],
-      premise: prop('p', [], ['false']),
+      next: ['a2', 'a3', 'a4'],
     },
-  ],
+  },
   conclusion: {
-    a2: {
-      mutuallyExclusiveConclusions: [prop('a', [], ['true']), prop('a', [], ['false'])],
-      exhaustive: true,
-    },
-    a3: {
-      mutuallyExclusiveConclusions: [prop('b', [], ['true']), prop('b', [], ['false'])],
-      exhaustive: true,
-    },
-    a4: {
-      mutuallyExclusiveConclusions: [prop('c', [], ['true']), prop('c', [], ['false'])],
-      exhaustive: true,
-    },
+    a2: conc('a', [], ['true', 'false']),
+    a3: conc('b', [], ['true', 'false']),
+    a4: conc('c', [], ['true', 'false']),
   },
 };
 const r2: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'b1', args: {} },
-  premise: [],
+  seed: 'b1',
+  premise: {},
   conclusion: {
-    b1: {
-      mutuallyExclusiveConclusions: [prop('p', [], ['false'])],
-      exhaustive: false,
-    },
-  },
-};
-// q :- !p.
-const r3: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'c1', args: {} },
-  premise: [
-    {
-      name: 'c1',
-      nextName: ['c2'],
-      independent: [],
-      shared: [],
-      new: [],
-      premise: prop('p', [], ['false']),
-    },
-  ],
-  conclusion: {
-    c2: { mutuallyExclusiveConclusions: [prop('q', [], ['true'])], exhaustive: true },
-  },
-};
-// a :- q.
-const r4: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'd1', args: {} },
-  premise: [
-    {
-      name: 'd1',
-      nextName: ['d2'],
-      independent: [],
-      shared: [],
-      new: [],
-      premise: prop('q', [], ['true']),
-    },
-  ],
-  conclusion: {
-    d2: { mutuallyExclusiveConclusions: [prop('a', [], ['true'])], exhaustive: true },
+    b1: conc('p', [], ['false'], false),
   },
 };
 
-export const mutexExample: Example = {
-  rules: [...r1.premise, ...r2.premise, ...r3.premise, ...r4.premise],
-  conclusions: { ...r1.conclusion, ...r2.conclusion, ...r3.conclusion, ...r4.conclusion },
-  db: {
-    facts: [],
-    partialRules: [r1.seed, r2.seed, r3.seed, r4.seed],
-    uninteresting: [],
-    queue: [r1.seed, r2.seed, r3.seed, r4.seed],
+// q :- !p.
+const r3: CompiledRule = {
+  seed: 'c1',
+  premise: {
+    c1: {
+      premise: prop('p', [], 'false'),
+      shared: [],
+      next: ['c2'],
+    },
+  },
+  conclusion: {
+    c2: conc('q1', [], ['true']),
   },
 };
+
+// a :- q.
+const r4: CompiledRule = {
+  seed: 'd1',
+  premise: {
+    d1: {
+      premise: prop('p', [], 'false'),
+      shared: [],
+      next: ['d2'],
+    },
+  },
+  conclusion: {
+    d2: conc('a', [], ['true']),
+  },
+};
+
+export const mutexExample = makeExample([r1, r2, r3, r4], []);
 
 /*
  *
- * np nq
+ * Character creation
  *
  */
 const r5: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'a1', args: {} },
-  premise: [
-    {
-      name: 'a1',
-      nextName: ['a2'],
-      independent: [],
+  seed: 'a1',
+  premise: {
+    a1: {
+      premise: prop('character', ['C']),
       shared: [],
-      new: [],
-      premise: prop('q', [], ['false']),
+      next: ['a2'],
     },
-  ],
+  },
   conclusion: {
-    a2: { mutuallyExclusiveConclusions: [prop('p', [], ['true'])], exhaustive: true },
+    a2: conc('species', ['C'], ['cat', 'dog']),
   },
 };
 
 const r6: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'b1', args: {} },
-  premise: [],
+  seed: 'b1',
+  premise: {
+    b1: {
+      premise: prop('character', ['C']),
+      shared: [],
+      next: ['b2'],
+    },
+  },
   conclusion: {
-    b1: { mutuallyExclusiveConclusions: [prop('p', [], ['false'])], exhaustive: false },
+    b2: conc('home', ['C'], ['uplands', 'lowlands', 'catlands', 'doghouse']),
   },
 };
 
 const r7: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'c1', args: {} },
-  premise: [
-    {
-      name: 'c1',
-      nextName: ['c2'],
-      independent: [],
+  seed: 'c1',
+  premise: {
+    c1: {
+      premise: prop('home', ['C'], 'doghouse'),
       shared: [],
-      new: [],
-      premise: prop('p', [], ['false']),
+      next: ['c2'],
     },
-  ],
+  },
   conclusion: {
-    c2: { mutuallyExclusiveConclusions: [prop('q', [], ['true'])], exhaustive: true },
+    c2: conc('species', ['C'], ['dog']),
   },
 };
 
 const r8: CompiledRule = {
-  seed: { type: 'PartialRule', name: 'd1', args: {} },
-  premise: [],
-  conclusion: {
-    d1: { mutuallyExclusiveConclusions: [prop('q', [], ['false'])], exhaustive: false },
+  seed: 'd1',
+  premise: {
+    d1: {
+      premise: prop('home', ['luna'], 'H'),
+      shared: [],
+      next: ['d2'],
+    },
+    d2: {
+      premise: prop('home', ['terra'], 'H'),
+      shared: ['H'],
+      next: ['d3'],
+    },
   },
+  conclusion: { d3: { type: 'Contradiction' } },
 };
 
-export const pqExample: Example = {
-  rules: [...r5.premise, ...r6.premise, ...r7.premise, ...r8.premise],
-  conclusions: { ...r5.conclusion, ...r6.conclusion, ...r7.conclusion, ...r8.conclusion },
-  db: {
-    facts: [],
-    partialRules: [r5.seed, r6.seed, r7.seed, r8.seed],
-    uninteresting: [],
-    queue: [r5.seed, r6.seed, r7.seed, r8.seed],
+const r9: CompiledRule = {
+  seed: 'e1',
+  premise: {
+    e1: {
+      premise: prop('home', ['C1'], 'doghouse'),
+      shared: [],
+      next: ['e2'],
+    },
+    e2: {
+      premise: prop('home', ['C2'], 'doghouse'),
+      shared: [],
+      next: ['e3'],
+    },
+    e3: {
+      premise: {
+        type: 'Inequality',
+        a: { type: 'var', name: 'C1' },
+        b: { type: 'var', name: 'C2' },
+      },
+      shared: ['C1', 'C2'],
+      next: ['e4'],
+    },
   },
+  conclusion: { e4: { type: 'Contradiction' } },
 };
+
+export const characterExample = makeExample(
+  [r5, r6, r7, r8, r9],
+  [
+    fact('character', ['celeste']),
+    fact('character', ['nimbus']),
+  ],
+);
 
 /*
  *
  * Execution
  *
  */
-const current = pqExample;
+const inter = readline.promises.createInterface({ input: process.stdin, output: process.stdout });
+async function run(example: Example) {
+  let dbStack: Database[] = [example.db];
+  const saturatedDbs: Database[] = [];
 
-let workingDbs: Database[] = [current.db];
-const saturatedDbs: Database[] = [];
-const rules = current.rules;
-const conclusions = current.conclusions;
+  let loop = 0;
+  while (dbStack.length > 0) {
+    console.log(`-- ${++loop} (${dbStack.length} working databases) --\n`);
+    console.log(dbToString(dbStack[0]));
 
-let loop = 0;
-while (workingDbs.length > 0) {
-  console.log(`-- ${++loop} (${workingDbs.length} working databases) --\n`);
-  console.log(dbToString(workingDbs[0]));
-  console.log('\n');
-  if (workingDbs[0].queue.length === 0) {
-    console.log('DB SATURATED — popping DB queue');
-    const [saturatedDb, ...rest] = workingDbs;
-    workingDbs = rest;
-    saturatedDbs.push(saturatedDb);
-  } else {
-    const newDbs = step(rules, conclusions, workingDbs[0]);
-    if (newDbs.length === 0) {
-      console.log('DB FAILED CONSTRAINT - removing DB from consideration');
-      workingDbs.shift();
-    } else if (newDbs.length > 1) {
-      console.log(`MULTIPLE DBs - pushing ${newDbs.length - 1} onto stack`);
-      for (let i = 1; i < newDbs.length; i++) {
-        console.log(`Pushing ${i} of ${newDbs.length - 1}:`);
-        console.log(dbToString(newDbs[i]));
-      }
-      workingDbs.shift();
-      workingDbs.unshift(...newDbs);
+    if (dbStack[0].queue.length === 0) {
+      console.log('DB SATURATED — popping DB queue');
+      await inter.question('Continue? ');
+      const [saturatedDb, ...rest] = dbStack;
+      dbStack = rest;
+      saturatedDbs.push(saturatedDb);
     } else {
-      workingDbs[0] = newDbs[0];
+      const newDbs = step(example.rules, example.conclusions, dbStack[0]);
+      if (newDbs.length === 0) {
+        console.log('DB FAILED CONSTRAINT - removing DB from consideration');
+        dbStack.shift();
+      } else if (newDbs.length > 1) {
+        console.log(`MULTIPLE DBs - pushing ${newDbs.length - 1} onto stack`);
+        for (let i = 1; i < newDbs.length; i++) {
+          console.log(`Pushing ${i} of ${newDbs.length - 1}:`);
+          console.log(dbToString(newDbs[i]));
+        }
+        dbStack.shift();
+        dbStack.unshift(...newDbs);
+      } else {
+        dbStack[0] = newDbs[0];
+      }
     }
+  }
+
+  console.log(`${saturatedDbs.length} saturated database(s)`);
+  for (let i = 0; i < saturatedDbs.length; i++) {
+    console.log(`Saturated database ${i + 1} of ${saturatedDbs.length}:`);
+    console.log(dbToString(saturatedDbs[i]));
   }
 }
 
-console.log(`${saturatedDbs.length} saturated database(s)`);
-for (let i = 0; i < saturatedDbs.length; i++) {
-  console.log(`Saturated database ${i + 1} of ${saturatedDbs.length}:`);
-  console.log(dbToString(saturatedDbs[i]));
-}
+run(characterExample).then(() => {
+  process.exit();
+});

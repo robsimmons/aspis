@@ -2,12 +2,14 @@ export type Pattern =
   | { type: 'const'; name: string; args: Pattern[] }
   | { type: 'int'; value: number }
   | { type: 'string'; value: string }
-  | { type: 'var'; name: string };
+  | { type: 'var'; name: string }
+  | { type: 'triv' };
 
 export type Data =
   | { type: 'const'; name: string; args: Data[] }
   | { type: 'int'; value: number }
-  | { type: 'string'; value: string };
+  | { type: 'string'; value: string }
+  | { type: 'triv' };
 
 export type Substitution = { [varName: string]: Data };
 
@@ -35,6 +37,9 @@ export function match(
       if (pattern.type !== data.type) return null;
       if (pattern.value !== data.value) return null;
       return substitution;
+    case 'triv':
+      if (pattern.type !== data.type) return null;
+      return substitution;
     case 'var':
       if (substitution[pattern.name]) return match(substitution, substitution[pattern.name], data);
       return { [pattern.name]: data, ...substitution };
@@ -45,6 +50,7 @@ export function apply(substitution: Substitution, pattern: Pattern): Data {
   switch (pattern.type) {
     case 'int':
     case 'string':
+    case 'triv':
       return pattern;
     case 'var':
       const result = substitution[pattern.name];
@@ -68,6 +74,8 @@ export function equal(t: Data, s: Data): boolean {
     case 'int':
     case 'string':
       return t.type === s.type && t.value !== s.value;
+    case 'triv':
+      return t.type === s.type;
     case 'const':
       return (
         t.type === s.type &&
@@ -88,6 +96,8 @@ export function termToString(t: Pattern): string {
       return `${t.value}`;
     case 'string':
       return `"${t.value}"`;
+    case 'triv':
+      return `()`;
     case 'var':
       return t.name;
   }
@@ -97,6 +107,7 @@ export function assertData(p: Pattern): Data {
   switch (p.type) {
     case 'int':
     case 'string':
+    case 'triv':
       return p;
     case 'const':
       return { type: 'const', name: p.name, args: p.args.map((arg) => assertData(arg)) };
@@ -118,6 +129,9 @@ export function parseTerm(s: string): { data: Pattern; rest: string } | null {
   }
 
   if (s[0] === '(') {
+    if (s[1] === ')') {
+      return { data: { type: 'triv' }, rest: s.slice(2).trimStart() };
+    }
     let next = parseTerm(s.slice(1));
     if (next === null) {
       throw new Error('No term following an open parenthesis');
@@ -125,7 +139,7 @@ export function parseTerm(s: string): { data: Pattern; rest: string } | null {
     if (next.rest[0] !== ')') {
       throw new Error('Did not find expected matching parenthesis');
     }
-    return { data: next.data, rest: next.rest.slice(1) };
+    return { data: next.data, rest: next.rest.slice(1).trimStart() };
   }
 
   const constMatch = s.match(/^[0-9a-zA-Z]+/);
