@@ -12,12 +12,6 @@ import {
 import { Pattern, freeVars, parseData, parsePattern } from './terms';
 import readline from 'readline';
 
-type CompiledRule = {
-  seed: string;
-  premise: { [name: string]: InternalPartialRule };
-  conclusion: { [name: string]: InternalConclusion };
-};
-
 interface Program {
   rules: { [name: string]: InternalPartialRule };
   conclusions: { [r: string]: InternalConclusion };
@@ -38,13 +32,17 @@ type Declaration =
 
 function indexToRuleName(index: number): string {
   if (index >= 26) {
-    return `${indexToRuleName(Math.floor(index / 26))}${String.fromCharCode(97 + index % 26)}`;
+    return `${indexToRuleName(Math.floor(index / 26))}${String.fromCharCode(97 + (index % 26))}`;
   }
   return String.fromCharCode(97 + index);
 }
 
 function prop(name: string, args: string[], value: string = '()'): Proposition {
   return { type: 'Proposition', name, args: [...args.map(parsePattern), parsePattern(value)] };
+}
+
+function neq(a: string, b: string): Inequality {
+  return { type: 'Inequality', a: parsePattern(a), b: parsePattern(b) };
 }
 
 function fact(name: string, args: string[], value: string = '()'): Fact {
@@ -58,21 +56,6 @@ function conc(
   exhaustive: boolean = true,
 ): Conclusion {
   return {
-    name,
-    args: args.map(parsePattern),
-    values: values.map(parsePattern),
-    exhaustive,
-  };
-}
-
-function concy(
-  name: string,
-  args: string[],
-  values: string[] = ['()'],
-  exhaustive: boolean = true,
-): InternalConclusion {
-  return {
-    type: 'NewFact',
     name,
     args: args.map(parsePattern),
     values: values.map(parsePattern),
@@ -186,26 +169,6 @@ export function compile(decls: Declaration[]): Program {
   return program;
 }
 
-function makeExample(rules: CompiledRule[], facts: Fact[]): Program {
-  const example: Program = {
-    rules: {},
-    conclusions: {},
-    db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
-  };
-  for (const { seed, premise, conclusion } of rules) {
-    example.rules = { ...example.rules, ...premise };
-    example.conclusions = { ...example.conclusions, ...conclusion };
-    example.db.prefixes[seed] = [{}];
-    example.db.queue = [...example.db.queue, { type: 'Prefix', name: seed, args: {} }];
-  }
-  for (const fact of facts) {
-    const args = fact.args.slice(0, fact.args.length - 1);
-    const value = fact.args[fact.args.length - 1];
-    example.db = insertFact(fact.name, args, value, example.db);
-  }
-  return example;
-}
-
 /*
  *
  * EXAMPLE 1: edge/path
@@ -234,157 +197,114 @@ export const edgeExample = compile([
  *
  */
 
+export const aspExample1 = compile([
+  // { a, b, c } :- !p.
+  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], false) },
+  {
+    type: 'Rule',
+    premises: [prop('p', [], 'false')],
+    conclusion: conc('a', [], ['true', 'false']),
+  },
+  {
+    type: 'Rule',
+    premises: [prop('p', [], 'false')],
+    conclusion: conc('b', [], ['true', 'false']),
+  },
+  {
+    type: 'Rule',
+    premises: [prop('p', [], 'false')],
+    conclusion: conc('c', [], ['true', 'false']),
+  },
 
-// { a, b, c } :- !p.
-const r1: CompiledRule = {
-  seed: 'a1',
-  premise: {
-    a1: {
-      premise: prop('p', [], 'false'),
-      shared: [],
-      next: ['a2', 'a3', 'a4'],
-    },
-  },
-  conclusion: {
-    a2: concy('a', [], ['true', 'false']),
-    a3: concy('b', [], ['true', 'false']),
-    a4: concy('c', [], ['true', 'false']),
-  },
-};
-const r2: CompiledRule = {
-  seed: 'b1',
-  premise: {},
-  conclusion: {
-    b1: concy('p', [], ['false'], false),
-  },
-};
+  // q :- !p.
+  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], false) },
+  { type: 'Rule', premises: [prop('p', [], 'false')], conclusion: conc('q', [], ['true']) },
 
-// q :- !p.
-const r3: CompiledRule = {
-  seed: 'c1',
-  premise: {
-    c1: {
-      premise: prop('p', [], 'false'),
-      shared: [],
-      next: ['c2'],
-    },
-  },
-  conclusion: {
-    c2: concy('q1', [], ['true']),
-  },
-};
-
-// a :- q.
-const r4: CompiledRule = {
-  seed: 'd1',
-  premise: {
-    d1: {
-      premise: prop('p', [], 'false'),
-      shared: [],
-      next: ['d2'],
-    },
-  },
-  conclusion: {
-    d2: concy('a', [], ['true']),
-  },
-};
-
-export const mutexExample = makeExample([r1, r2, r3, r4], []);
+  // a :- q.
+  { type: 'Rule', premises: [prop('q', [], 'true')], conclusion: conc('a', [], ['true']) },
+]);
 
 /*
  *
  * Character creation
  *
  */
-const r5: CompiledRule = {
-  seed: 'a1',
-  premise: {
-    a1: {
-      premise: prop('character', ['C']),
-      shared: [],
-      next: ['a2'],
-    },
-  },
-  conclusion: {
-    a2: concy('species', ['C'], ['cat', 'dog']),
-  },
-};
+export const characterCreator = compile([
+  // Four characters
+  { type: 'Fact', fact: fact('character', ['celeste']) },
+  { type: 'Fact', fact: fact('character', ['nimbus']) },
+  { type: 'Fact', fact: fact('character', ['terra']) },
+  { type: 'Fact', fact: fact('character', ['luna']) },
 
-const r6: CompiledRule = {
-  seed: 'b1',
-  premise: {
-    b1: {
-      premise: prop('character', ['C']),
-      shared: [],
-      next: ['b2'],
-    },
-  },
-  conclusion: {
-    b2: concy('home', ['C'], ['uplands', 'lowlands', 'catlands', 'doghouse']),
-  },
-};
+  // left is { celeste, nimbus, terra, luna } :-.
+  // right is { celeste, nimbus, terra, luna } :-.
+  // :- left is C, right is C.
+  // :- left is C1, race C1 is R, right is C2, race C2 is R.
 
-const r7: CompiledRule = {
-  seed: 'c1',
-  premise: {
-    c1: {
-      premise: prop('home', ['C'], 'doghouse'),
-      shared: [],
-      next: ['c2'],
-    },
+  {
+    type: 'Rule',
+    premises: [],
+    conclusion: conc('left', [], ['celeste', 'nimbus', 'terra', 'luna']),
   },
-  conclusion: {
-    c2: concy('species', ['C'], ['dog']),
-  },
-};
 
-const r8: CompiledRule = {
-  seed: 'd1',
-  premise: {
-    d1: {
-      premise: prop('home', ['luna'], 'H'),
-      shared: [],
-      next: ['d2'],
-    },
-    d2: {
-      premise: prop('home', ['terra'], 'H'),
-      shared: ['H'],
-      next: ['d3'],
-    },
+  // Every character has a home in one of four places
+  {
+    type: 'Rule',
+    premises: [prop('character', ['C'])],
+    conclusion: conc('home', ['C'], ['uplands', 'lowlands', 'catlands', 'doghouse']),
   },
-  conclusion: { d3: { type: 'Contradiction' } },
-};
 
-const r9: CompiledRule = {
-  seed: 'e1',
-  premise: {
-    e1: {
-      premise: prop('home', ['C1'], 'doghouse'),
-      shared: [],
-      next: ['e2'],
-    },
-    e2: {
-      premise: prop('home', ['C2'], 'doghouse'),
-      shared: [],
-      next: ['e3'],
-    },
-    e3: {
-      premise: {
-        type: 'Inequality',
-        a: { type: 'var', name: 'C1' },
-        b: { type: 'var', name: 'C2' },
-      },
-      shared: ['C1', 'C2'],
-      next: ['e4'],
-    },
+  // Every character is one of four races
+  {
+    type: 'Rule',
+    premises: [prop('character', ['C'])],
+    conclusion: conc('race', ['C'], ['cat', 'dog', 'horse', 'bird']),
   },
-  conclusion: { e4: { type: 'Contradiction' } },
-};
 
-export const characterExample = makeExample(
-  [r5, r6, r7, r8, r9],
-  [fact('character', ['celeste']), fact('character', ['nimbus'])],
-);
+  // Birds live in the uplands
+  {
+    type: 'Rule',
+    premises: [prop('race', ['C'], 'bird')],
+    conclusion: conc('home', ['C'], ['uplands']),
+  },
+
+  // Only dogs live in the doghouse
+  {
+    type: 'Rule',
+    premises: [prop('home', ['C'], 'doghouse')],
+    conclusion: conc('race', ['C'], ['dog']),
+  },
+
+  // Celeste and nimbus live in the same place and have the same race (this demonstrates
+  // two different ways of doing the same thing)
+  {
+    type: 'Constraint',
+    premises: [prop('home', ['nimbus'], 'H1'), prop('home', ['celeste'], 'H2'), neq('H1', 'H2')],
+  },
+  {
+    type: 'Rule',
+    premises: [prop('race', ['nimbus'], 'R')],
+    conclusion: conc('race', ['celeste'], ['R']),
+  },
+
+  // Luna and terra live in different places
+  {
+    type: 'Constraint',
+    premises: [prop('home', ['luna'], 'H'), prop('home', ['terra'], 'H')],
+  },
+
+  // At most one person in the doghouse
+  {
+    type: 'Constraint',
+    premises: [prop('home', ['C1'], 'doghouse'), prop('home', ['C2'], 'doghouse'), neq('C1', 'C2')],
+  },
+
+  // Birds avoid the catlands
+  {
+    type: 'Constraint',
+    premises: [prop('race', ['C'], 'bird'), prop('home', ['C'], 'catlands')],
+  },
+]);
 
 /*
  *
@@ -433,6 +353,6 @@ async function run(example: Program) {
   }
 }
 
-run(edgeExample).then(() => {
+run(characterCreator).then(() => {
   process.exit();
 });
