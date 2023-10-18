@@ -234,7 +234,6 @@ export const edgeExample = compile([
  *
  */
 
-export const mutexExample2
 
 // { a, b, c } :- !p.
 const r1: CompiledRule = {
