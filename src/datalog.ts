@@ -1,12 +1,16 @@
+import { Premise, Proposition } from './syntax';
 import { Substitution, Pattern, Data, match, apply, equal, termToString } from './terms';
 
-export type Proposition = { type: 'Proposition'; name: string; args: Pattern[] };
-export type Inequality = { type: 'Inequality'; a: Pattern; b: Pattern };
+export interface Program {
+  rules: { [name: string]: InternalPartialRule };
+  conclusions: { [r: string]: InternalConclusion };
+  db: Database;
+}
 
 export type InternalPartialRule = {
   next: string[];
   shared: string[];
-  premise: Proposition | Inequality;
+  premise: Premise;
 };
 
 export type InternalConclusion =
@@ -102,6 +106,8 @@ function stepConclusion(conclusion: InternalConclusion, prefix: Prefix, db: Data
 
   if (knownValue?.type === 'is') {
     // Either this conclusion will be redundant or cause a contradiction
+    console.log(knownValue);
+    console.log(values);
     if (conclusion.exhaustive && !values.some((value) => equal(value, knownValue.value))) {
       return [];
     }
@@ -206,10 +212,6 @@ function stepFact(
       const substitution = matchFact({}, rule.premise, fact);
       if (substitution !== null) {
         for (const item of db.prefixes[ruleName] || []) {
-          console.log(ruleName);
-          console.log(item);
-          console.log(substitution);
-          console.log(rule.shared);
           if (rule.shared.every((varName) => equal(substitution[varName], item[varName]))) {
             newPrefixes.push(
               ...rule.next.map<Prefix>((next) => ({
@@ -227,27 +229,36 @@ function stepFact(
   return extendDbWithPrefixes(newPrefixes, db);
 }
 
-function extendDbWithPrefixes(newPrefixList: Prefix[], db: Database): Database {
-  const newPrefixMap: { [name: string]: Substitution[] } = {};
-  for (const newPrefix of newPrefixList) {
-    if (!newPrefixMap[newPrefix.name]) {
-      newPrefixMap[newPrefix.name] = db.prefixes[newPrefix.name]?.slice(0) || [];
+function extendDbWithPrefixes(candidatePrefixList: Prefix[], db: Database): Database {
+  let copied = false;
+  for (const prefix of candidatePrefixList) {
+    if (!db.prefixes[prefix.name]) {
+      db.prefixes[prefix.name] = [];
     }
+
+    // Filter out prefixes that are already in the database
+    // Relies on the fact that all prefixes with the same name
+    // have the same set of variables that they ground
     if (
-      !newPrefixMap[newPrefix.name].some((existingPrefixArgs) =>
-        Object.keys(existingPrefixArgs).every((varName) =>
-          equal(existingPrefixArgs[varName], newPrefix.args[varName]),
-        ),
-      )
+      !db.prefixes[prefix.name].some((substitution) => {
+        console.log(substitution);
+        return Object.keys(substitution).every((varName) =>
+          equal(substitution[varName], prefix.args[varName]),
+        );
+      })
     ) {
-      newPrefixMap[newPrefix.name].push(newPrefix.args);
+      // copy on write
+      if (!copied) {
+        copied = true;
+        db = { ...db, prefixes: { ...db.prefixes }, queue: [...db.queue] };
+      }
+
+      db.prefixes[prefix.name] = [...db.prefixes[prefix.name], prefix.args];
+      db.queue.push(prefix);
     }
   }
-  return {
-    ...db,
-    prefixes: { ...db.prefixes, ...newPrefixMap },
-    queue: [...db.queue, ...newPrefixList],
-  };
+
+  return db;
 }
 
 export function dbToString(db: Database) {

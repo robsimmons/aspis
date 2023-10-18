@@ -1,41 +1,8 @@
-import {
-  Database,
-  Fact,
-  Inequality,
-  InternalConclusion,
-  InternalPartialRule,
-  Proposition,
-  dbToString,
-  insertFact,
-  step,
-} from './datalog';
-import { Pattern, freeVars, parseData, parsePattern } from './terms';
+import { compile } from './compile';
+import { Database, Program, dbToString, step } from './datalog';
+import { Conclusion, Declaration, Inequality, Proposition } from './syntax';
+import { parsePattern } from './terms';
 import readline from 'readline';
-
-interface Program {
-  rules: { [name: string]: InternalPartialRule };
-  conclusions: { [r: string]: InternalConclusion };
-  db: Database;
-}
-
-interface Conclusion {
-  name: string;
-  args: Pattern[];
-  values: Pattern[];
-  exhaustive: boolean;
-}
-
-type Declaration =
-  | { type: 'Fact'; fact: Fact }
-  | { type: 'Constraint'; premises: (Proposition | Inequality)[] }
-  | { type: 'Rule'; premises: (Proposition | Inequality)[]; conclusion: Conclusion };
-
-function indexToRuleName(index: number): string {
-  if (index >= 26) {
-    return `${indexToRuleName(Math.floor(index / 26))}${String.fromCharCode(97 + (index % 26))}`;
-  }
-  return String.fromCharCode(97 + index);
-}
 
 function prop(name: string, args: string[], value: string = '()'): Proposition {
   return { type: 'Proposition', name, args: [...args.map(parsePattern), parsePattern(value)] };
@@ -45,128 +12,22 @@ function neq(a: string, b: string): Inequality {
   return { type: 'Inequality', a: parsePattern(a), b: parsePattern(b) };
 }
 
-function fact(name: string, args: string[], value: string = '()'): Fact {
-  return { type: 'Fact', name, args: [...args.map(parseData), parseData(value)] };
+function fact(name: string, args: string[], value: string = '()'): Declaration {
+  return { type: 'Rule', premises: [], conclusion: conc(name, args, [value], null) };
 }
 
 function conc(
   name: string,
   args: string[],
   values: string[] = ['()'],
-  exhaustive: boolean = true,
+  isThereMore: null | '...' = null,
 ): Conclusion {
   return {
     name,
     args: args.map(parsePattern),
     values: values.map(parsePattern),
-    exhaustive,
+    exhaustive: isThereMore === null,
   };
-}
-
-export function compilePremises(
-  rule: string,
-  premises: (Proposition | Inequality)[],
-): {
-  seed: string;
-  rules: [string, InternalPartialRule][];
-  conclusion: string;
-  boundVars: Set<string>;
-} {
-  const knownFreeVars = new Set<string>();
-  const rules = premises.map((premise, i): [string, InternalPartialRule] => {
-    const thisPartial = `${rule}${i}`;
-    const nextPartial = `${rule}${i + 1}`;
-    switch (premise.type) {
-      case 'Inequality': {
-        const fv = freeVars(premise.a, premise.b);
-        for (const v of fv) {
-          if (!knownFreeVars.has(v)) {
-            throw new Error(`Variable '${v}' not defined before being used in an inequality.`);
-          }
-        }
-        return [thisPartial, { next: [nextPartial], shared: [...fv], premise }];
-      }
-
-      case 'Proposition': {
-        const fv = freeVars(...premise.args);
-        const shared = [];
-        for (const v of fv) {
-          if (knownFreeVars.has(v)) {
-            shared.push(v);
-          } else {
-            knownFreeVars.add(v);
-          }
-        }
-        return [thisPartial, { next: [nextPartial], shared, premise }];
-      }
-    }
-  });
-
-  return {
-    seed: `${rule}0`,
-    rules,
-    conclusion: `${rule}${premises.length}`,
-    boundVars: knownFreeVars,
-  };
-}
-
-export function compile(decls: Declaration[]): Program {
-  const program: Program = {
-    rules: {},
-    conclusions: {},
-    db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
-  };
-
-  for (let i = 0; i < decls.length; i++) {
-    const decl = decls[i];
-    const declName = indexToRuleName(i);
-    switch (decl.type) {
-      case 'Fact': {
-        const args = decl.fact.args.slice(0, decl.fact.args.length - 1);
-        const value = decl.fact.args[decl.fact.args.length - 1];
-        program.db = insertFact(decl.fact.name, args, value, program.db);
-        break;
-      }
-
-      case 'Constraint': {
-        const { seed, rules, conclusion } = compilePremises(declName, decl.premises);
-        for (const [name, rule] of rules) {
-          program.rules[name] = rule;
-        }
-        program.db.prefixes[seed] = [{}];
-        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
-        program.conclusions[conclusion] = { type: 'Contradiction' };
-        break;
-      }
-
-      case 'Rule': {
-        const { seed, rules, conclusion, boundVars } = compilePremises(declName, decl.premises);
-
-        const headVars = freeVars(...decl.conclusion.args, ...decl.conclusion.values);
-        for (const v of headVars) {
-          if (!boundVars.has(v)) {
-            throw new Error(`Variable '${v}' used in head of rule but not defined in a premise.`);
-          }
-        }
-
-        for (const [name, rule] of rules) {
-          program.rules[name] = rule;
-        }
-        program.db.prefixes[seed] = [{}];
-        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
-        program.conclusions[conclusion] = {
-          type: 'NewFact',
-          name: decl.conclusion.name,
-          args: decl.conclusion.args,
-          exhaustive: decl.conclusion.exhaustive,
-          values: decl.conclusion.values,
-        };
-        break;
-      }
-    }
-  }
-
-  return program;
 }
 
 /*
@@ -176,13 +37,14 @@ export function compile(decls: Declaration[]): Program {
  */
 
 export const edgeExample = compile([
-  { type: 'Fact', fact: fact('edge', ['a', 'b']) },
-  { type: 'Fact', fact: fact('edge', ['b', 'c']) },
-  { type: 'Fact', fact: fact('edge', ['c', 'd']) },
-  { type: 'Fact', fact: fact('edge', ['d', 'e']) },
-  { type: 'Fact', fact: fact('edge', ['e', 'f']) },
-  { type: 'Fact', fact: fact('edge', ['f', 'g']) },
-  { type: 'Fact', fact: fact('edge', ['f', 'c']) },
+  fact('edge', ['a', 'b']),
+  fact('edge', ['b', 'c']),
+  fact('edge', ['c', 'd']),
+  fact('edge', ['d', 'e']),
+  fact('edge', ['e', 'f']),
+  fact('edge', ['f', 'c']),
+  fact('edge', ['g', 'f']),
+  fact('edge', ['j', 'g']),
   { type: 'Rule', premises: [prop('edge', ['X', 'Y'])], conclusion: conc('path', ['X', 'Y']) },
   {
     type: 'Rule',
@@ -199,7 +61,7 @@ export const edgeExample = compile([
 
 export const aspExample1 = compile([
   // { a, b, c } :- !p.
-  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], false) },
+  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], '...') },
   {
     type: 'Rule',
     premises: [prop('p', [], 'false')],
@@ -217,11 +79,37 @@ export const aspExample1 = compile([
   },
 
   // q :- !p.
-  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], false) },
+  { type: 'Rule', premises: [], conclusion: conc('p', [], ['false'], '...') },
   { type: 'Rule', premises: [prop('p', [], 'false')], conclusion: conc('q', [], ['true']) },
 
   // a :- q.
   { type: 'Rule', premises: [prop('q', [], 'true')], conclusion: conc('a', [], ['true']) },
+]);
+
+/*
+ *
+ * Numbers
+ *
+ */
+export const nats = compile([
+  fact('even', ['10']),
+  { type: 'Rule', premises: [prop('even', ['s(X)'])], conclusion: conc('odd', ['X']) },
+  { type: 'Rule', premises: [prop('odd', ['s(X)'])], conclusion: conc('even', ['X']) },
+]);
+
+export const ints = compile([
+  { type: 'Rule', premises: [], conclusion: conc('a', [], ['1', '2', '3', '4', '5', '6', '7']) },
+  {
+    type: 'Rule',
+    premises: [],
+    conclusion: conc('b', [], ['-1', '2', '-3', '4', '-5', '6', '-6']),
+  },
+  { type: 'Rule', premises: [], conclusion: conc('c', [], ['1', '2', '3', '4', '5', '6', '7']) },
+  {
+    type: 'Rule',
+    premises: [prop('a', [], 'A'), prop('b', [], 'B')],
+    conclusion: conc('c', [], ['plus A B']),
+  },
 ]);
 
 /*
@@ -231,10 +119,10 @@ export const aspExample1 = compile([
  */
 export const characterCreator = compile([
   // Four characters
-  { type: 'Fact', fact: fact('character', ['celeste']) },
-  { type: 'Fact', fact: fact('character', ['nimbus']) },
-  { type: 'Fact', fact: fact('character', ['terra']) },
-  { type: 'Fact', fact: fact('character', ['luna']) },
+  fact('character', ['celeste']),
+  fact('character', ['nimbus']),
+  fact('character', ['luna']),
+  fact('character', ['terra']),
 
   // left is { celeste, nimbus, terra, luna } :-.
   // right is { celeste, nimbus, terra, luna } :-.
@@ -353,6 +241,6 @@ async function run(example: Program) {
   }
 }
 
-run(characterCreator).then(() => {
+run(ints).then(() => {
   process.exit();
 });
