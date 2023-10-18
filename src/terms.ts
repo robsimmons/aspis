@@ -187,3 +187,28 @@ export function parsePattern(s: string): Pattern {
 export function parseData(s: string): Data {
   return assertData(parsePattern(s));
 }
+
+function freeVarsAccum(s: Set<string>, p: Pattern) {
+  switch (p.type) {
+    case 'var':
+      s.add(p.name);
+      return;
+    case 'int':
+    case 'string':
+    case 'triv':
+      return;
+    case 'const':
+      for (let arg of p.args) {
+        freeVarsAccum(s, arg);
+      }
+      return;
+  }
+}
+
+export function freeVars(...patterns: Pattern[]): Set<string> {
+  const s = new Set<string>();
+  for (let pattern of patterns) {
+    freeVarsAccum(s, pattern);
+  }
+  return s;
+}

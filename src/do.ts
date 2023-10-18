@@ -1,6 +1,7 @@
 import {
   Database,
   Fact,
+  Inequality,
   InternalConclusion,
   InternalPartialRule,
   Proposition,
@@ -8,7 +9,7 @@ import {
   insertFact,
   step,
 } from './datalog';
-import { parseData, parsePattern } from './terms';
+import { Pattern, freeVars, parseData, parsePattern } from './terms';
 import readline from 'readline';
 
 type CompiledRule = {
@@ -17,10 +18,29 @@ type CompiledRule = {
   conclusion: { [name: string]: InternalConclusion };
 };
 
-interface Example {
+interface Program {
   rules: { [name: string]: InternalPartialRule };
   conclusions: { [r: string]: InternalConclusion };
   db: Database;
+}
+
+interface Conclusion {
+  name: string;
+  args: Pattern[];
+  values: Pattern[];
+  exhaustive: boolean;
+}
+
+type Declaration =
+  | { type: 'Fact'; fact: Fact }
+  | { type: 'Constraint'; premises: (Proposition | Inequality)[] }
+  | { type: 'Rule'; premises: (Proposition | Inequality)[]; conclusion: Conclusion };
+
+function indexToRuleName(index: number): string {
+  if (index >= 26) {
+    return `${indexToRuleName(Math.floor(index / 26))}${String.fromCharCode(97 + index % 26)}`;
+  }
+  return String.fromCharCode(97 + index);
 }
 
 function prop(name: string, args: string[], value: string = '()'): Proposition {
@@ -36,6 +56,20 @@ function conc(
   args: string[],
   values: string[] = ['()'],
   exhaustive: boolean = true,
+): Conclusion {
+  return {
+    name,
+    args: args.map(parsePattern),
+    values: values.map(parsePattern),
+    exhaustive,
+  };
+}
+
+function concy(
+  name: string,
+  args: string[],
+  values: string[] = ['()'],
+  exhaustive: boolean = true,
 ): InternalConclusion {
   return {
     type: 'NewFact',
@@ -46,8 +80,114 @@ function conc(
   };
 }
 
-function makeExample(rules: CompiledRule[], facts: Fact[]): Example {
-  const example: Example = {
+export function compilePremises(
+  rule: string,
+  premises: (Proposition | Inequality)[],
+): {
+  seed: string;
+  rules: [string, InternalPartialRule][];
+  conclusion: string;
+  boundVars: Set<string>;
+} {
+  const knownFreeVars = new Set<string>();
+  const rules = premises.map((premise, i): [string, InternalPartialRule] => {
+    const thisPartial = `${rule}${i}`;
+    const nextPartial = `${rule}${i + 1}`;
+    switch (premise.type) {
+      case 'Inequality': {
+        const fv = freeVars(premise.a, premise.b);
+        for (const v of fv) {
+          if (!knownFreeVars.has(v)) {
+            throw new Error(`Variable '${v}' not defined before being used in an inequality.`);
+          }
+        }
+        return [thisPartial, { next: [nextPartial], shared: [...fv], premise }];
+      }
+
+      case 'Proposition': {
+        const fv = freeVars(...premise.args);
+        const shared = [];
+        for (const v of fv) {
+          if (knownFreeVars.has(v)) {
+            shared.push(v);
+          } else {
+            knownFreeVars.add(v);
+          }
+        }
+        return [thisPartial, { next: [nextPartial], shared, premise }];
+      }
+    }
+  });
+
+  return {
+    seed: `${rule}0`,
+    rules,
+    conclusion: `${rule}${premises.length}`,
+    boundVars: knownFreeVars,
+  };
+}
+
+export function compile(decls: Declaration[]): Program {
+  const program: Program = {
+    rules: {},
+    conclusions: {},
+    db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
+  };
+
+  for (let i = 0; i < decls.length; i++) {
+    const decl = decls[i];
+    const declName = indexToRuleName(i);
+    switch (decl.type) {
+      case 'Fact': {
+        const args = decl.fact.args.slice(0, decl.fact.args.length - 1);
+        const value = decl.fact.args[decl.fact.args.length - 1];
+        program.db = insertFact(decl.fact.name, args, value, program.db);
+        break;
+      }
+
+      case 'Constraint': {
+        const { seed, rules, conclusion } = compilePremises(declName, decl.premises);
+        for (const [name, rule] of rules) {
+          program.rules[name] = rule;
+        }
+        program.db.prefixes[seed] = [{}];
+        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
+        program.conclusions[conclusion] = { type: 'Contradiction' };
+        break;
+      }
+
+      case 'Rule': {
+        const { seed, rules, conclusion, boundVars } = compilePremises(declName, decl.premises);
+
+        const headVars = freeVars(...decl.conclusion.args, ...decl.conclusion.values);
+        for (const v of headVars) {
+          if (!boundVars.has(v)) {
+            throw new Error(`Variable '${v}' used in head of rule but not defined in a premise.`);
+          }
+        }
+
+        for (const [name, rule] of rules) {
+          program.rules[name] = rule;
+        }
+        program.db.prefixes[seed] = [{}];
+        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
+        program.conclusions[conclusion] = {
+          type: 'NewFact',
+          name: decl.conclusion.name,
+          args: decl.conclusion.args,
+          exhaustive: decl.conclusion.exhaustive,
+          values: decl.conclusion.values,
+        };
+        break;
+      }
+    }
+  }
+
+  return program;
+}
+
+function makeExample(rules: CompiledRule[], facts: Fact[]): Program {
+  const example: Program = {
     rules: {},
     conclusions: {},
     db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
@@ -72,58 +212,29 @@ function makeExample(rules: CompiledRule[], facts: Fact[]): Example {
  *
  */
 
-// path X Y :- edge X Y
-const a: CompiledRule = {
-  seed: 'a1',
-  premise: {
-    a1: {
-      premise: prop('edge', ['X', 'Y']),
-      shared: [],
-      next: ['a2'],
-    },
+export const edgeExample = compile([
+  { type: 'Fact', fact: fact('edge', ['a', 'b']) },
+  { type: 'Fact', fact: fact('edge', ['b', 'c']) },
+  { type: 'Fact', fact: fact('edge', ['c', 'd']) },
+  { type: 'Fact', fact: fact('edge', ['d', 'e']) },
+  { type: 'Fact', fact: fact('edge', ['e', 'f']) },
+  { type: 'Fact', fact: fact('edge', ['f', 'g']) },
+  { type: 'Fact', fact: fact('edge', ['f', 'c']) },
+  { type: 'Rule', premises: [prop('edge', ['X', 'Y'])], conclusion: conc('path', ['X', 'Y']) },
+  {
+    type: 'Rule',
+    premises: [prop('edge', ['X', 'Y']), prop('path', ['Y', 'Z'])],
+    conclusion: conc('path', ['X', 'Z']),
   },
-  conclusion: {
-    a2: conc('path', ['X', 'Y']),
-  },
-};
-
-// path X Z :- edge X Y, path Y Z
-const b: CompiledRule = {
-  seed: 'b1',
-  premise: {
-    b1: {
-      premise: prop('edge', ['X', 'Y']),
-      shared: [],
-      next: ['b2'],
-    },
-    b2: {
-      premise: prop('path', ['Y', 'Z']),
-      shared: ['Y'],
-      next: ['b3'],
-    },
-  },
-  conclusion: {
-    b3: conc('path', ['X', 'Z']),
-  },
-};
-
-export const edgeExample = makeExample(
-  [a, b],
-  [
-    fact('edge', ['a', 'b']),
-    fact('edge', ['b', 'c']),
-    fact('edge', ['c', 'd']),
-    fact('edge', ['d', 'e']),
-    fact('edge', ['e', 'f']),
-    fact('edge', ['e', 'c']),
-  ],
-);
+]);
 
 /*
  *
  * EXAMPLE 2: some mutual exclusion
  *
  */
+
+export const mutexExample2
 
 // { a, b, c } :- !p.
 const r1: CompiledRule = {
@@ -136,16 +247,16 @@ const r1: CompiledRule = {
     },
   },
   conclusion: {
-    a2: conc('a', [], ['true', 'false']),
-    a3: conc('b', [], ['true', 'false']),
-    a4: conc('c', [], ['true', 'false']),
+    a2: concy('a', [], ['true', 'false']),
+    a3: concy('b', [], ['true', 'false']),
+    a4: concy('c', [], ['true', 'false']),
   },
 };
 const r2: CompiledRule = {
   seed: 'b1',
   premise: {},
   conclusion: {
-    b1: conc('p', [], ['false'], false),
+    b1: concy('p', [], ['false'], false),
   },
 };
 
@@ -160,7 +271,7 @@ const r3: CompiledRule = {
     },
   },
   conclusion: {
-    c2: conc('q1', [], ['true']),
+    c2: concy('q1', [], ['true']),
   },
 };
 
@@ -175,7 +286,7 @@ const r4: CompiledRule = {
     },
   },
   conclusion: {
-    d2: conc('a', [], ['true']),
+    d2: concy('a', [], ['true']),
   },
 };
 
@@ -196,7 +307,7 @@ const r5: CompiledRule = {
     },
   },
   conclusion: {
-    a2: conc('species', ['C'], ['cat', 'dog']),
+    a2: concy('species', ['C'], ['cat', 'dog']),
   },
 };
 
@@ -210,7 +321,7 @@ const r6: CompiledRule = {
     },
   },
   conclusion: {
-    b2: conc('home', ['C'], ['uplands', 'lowlands', 'catlands', 'doghouse']),
+    b2: concy('home', ['C'], ['uplands', 'lowlands', 'catlands', 'doghouse']),
   },
 };
 
@@ -224,7 +335,7 @@ const r7: CompiledRule = {
     },
   },
   conclusion: {
-    c2: conc('species', ['C'], ['dog']),
+    c2: concy('species', ['C'], ['dog']),
   },
 };
 
@@ -273,10 +384,7 @@ const r9: CompiledRule = {
 
 export const characterExample = makeExample(
   [r5, r6, r7, r8, r9],
-  [
-    fact('character', ['celeste']),
-    fact('character', ['nimbus']),
-  ],
+  [fact('character', ['celeste']), fact('character', ['nimbus'])],
 );
 
 /*
@@ -285,7 +393,7 @@ export const characterExample = makeExample(
  *
  */
 const inter = readline.promises.createInterface({ input: process.stdin, output: process.stdout });
-async function run(example: Example) {
+async function run(example: Program) {
   let dbStack: Database[] = [example.db];
   const saturatedDbs: Database[] = [];
 
@@ -326,6 +434,6 @@ async function run(example: Example) {
   }
 }
 
-run(characterExample).then(() => {
+run(edgeExample).then(() => {
   process.exit();
 });
