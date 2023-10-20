@@ -1,4 +1,4 @@
-import { Program, InternalPartialRule, insertFact } from './engine';
+import { Database, InternalPartialRule, Program, insertFact } from './engine';
 import { Declaration, Premise } from './syntax';
 import { assertData, freeVars } from './terms';
 
@@ -68,12 +68,12 @@ export function compilePremises(
   };
 }
 
-export function compile(decls: Declaration[]): Program {
+export function compile(decls: Declaration[]): { program: Program; initialDb: Database } {
   const program: Program = {
     rules: {},
     conclusions: {},
-    db: { facts: {}, factValues: {}, prefixes: {}, queue: [] },
   };
+  let initialDb: Database = { facts: {}, factValues: {}, prefixes: {}, queue: [] };
 
   let ruleNum = 0;
   for (const decl of decls) {
@@ -86,20 +86,24 @@ export function compile(decls: Declaration[]): Program {
         for (const [name, rule] of rules) {
           program.rules[name] = rule;
         }
-        program.db.prefixes[seed] = [{}];
-        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
+        initialDb.prefixes[seed] = [{}];
+        initialDb.queue.push({ type: 'Prefix', name: seed, args: {} });
         program.conclusions[conclusion] = { type: 'Contradiction' };
         break;
       }
 
       case 'Rule': {
-        if (decl.premises.length === 0 && decl.conclusion.values.length === 1) {
+        if (
+          decl.premises.length === 0 &&
+          decl.conclusion.values.length === 1 &&
+          decl.conclusion.exhaustive
+        ) {
           // This is just a fact
-          program.db = insertFact(
+          initialDb = insertFact(
             decl.conclusion.name,
             decl.conclusion.args.map(assertData),
             assertData(decl.conclusion.values[0]),
-            program.db,
+            initialDb,
           );
         }
 
@@ -111,8 +115,8 @@ export function compile(decls: Declaration[]): Program {
         for (const [name, rule] of rules) {
           program.rules[name] = rule;
         }
-        program.db.prefixes[seed] = [{}];
-        program.db.queue.push({ type: 'Prefix', name: seed, args: {} });
+        initialDb.prefixes[seed] = [{}];
+        initialDb.queue.push({ type: 'Prefix', name: seed, args: {} });
         program.conclusions[conclusion] = {
           type: 'NewFact',
           name: decl.conclusion.name,
@@ -125,5 +129,5 @@ export function compile(decls: Declaration[]): Program {
     }
   }
 
-  return program;
+  return { program, initialDb };
 }

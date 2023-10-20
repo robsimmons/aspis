@@ -111,7 +111,7 @@ export function apply(substitution: Substitution, pattern: Pattern): Data {
       }
 
       if (pattern.name === NAT_SUCC && pattern.args.length === 1) {
-        const arg = apply(substitution, pattern.args[1]);
+        const arg = apply(substitution, pattern.args[0]);
         if (arg.type === 'nat') {
           return { type: 'nat', value: arg.value + 1 };
         } else {
