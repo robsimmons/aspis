@@ -1,4 +1,4 @@
-import { Pattern, freeVars } from './terms';
+import { Pattern, freeVars, termToString } from './terms';
 
 export interface Proposition {
   type: 'Proposition';
@@ -28,10 +28,64 @@ export interface Conclusion {
 }
 
 export type Declaration =
-  | { type: 'Constraint'; premises: (Proposition | Inequality)[] }
-  | { type: 'Rule'; premises: (Proposition | Inequality)[]; conclusion: Conclusion };
+  | { type: 'Constraint'; premises: Premise[] }
+  | {
+      type: 'Rule';
+      premises: Premise[];
+      conclusion: Conclusion;
+    };
 
-function checkPremises(premises: Premise[]): { fv: Set<string>; errors: string[] } {
+export function propToString(p: Proposition) {
+  const args = p.args
+    .slice(0, p.args.length - 1)
+    .map((arg) => ` ${termToString(arg)}`)
+    .join('');
+  const value = p.args[p.args.length - 1];
+  return value.type === 'triv' ? `${p.name}${args}` : `${p.name}${args} is ${termToString(value)}`;
+}
+
+function headToString(head: Conclusion) {
+  const args = head.args.map((arg) => ` ${termToString(arg)}`).join('');
+  if (head.values.length !== 1 || !head.exhaustive) {
+    return `${head.name}${args} is { ${head.values.map(termToString).join(', ')}${
+      head.exhaustive ? '' : ', ...'
+    } }`;
+  } else if (head.values[0].type === 'triv') {
+    return `${head.name}${args}`;
+  } else {
+    return `${head.name}${args} is ${termToString(head.values[0])}`;
+  }
+}
+
+function premiseToString(premise: Premise) {
+  switch (premise.type) {
+    case 'Equality':
+      return `${termToString(premise.a)} == ${termToString(premise.b)}`;
+    case 'Inequality':
+      return `${termToString(premise.a)} != ${termToString(premise.b)}`;
+    case 'Proposition':
+      return propToString(premise);
+  }
+}
+
+export function declToString(decl: Declaration): string {
+  switch (decl.type) {
+    case 'Constraint':
+      return `:- ${decl.premises.map(premiseToString).join(', ')}.`;
+    case 'Rule':
+      if (decl.premises.length === 0) {
+        return `${headToString(decl.conclusion)}.`;
+      }
+      return `${headToString(decl.conclusion)} :- ${decl.premises
+        .map(premiseToString)
+        .join(', ')}.`;
+  }
+}
+
+function checkPremises(premises: Premise[]): {
+  fv: Set<string>;
+  errors: string[];
+} {
   const knownFreeVars = new Set<string>();
   const errors: string[] = [];
   for (let premise of premises) {

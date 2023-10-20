@@ -30,6 +30,9 @@ export function match(
       return substitution;
     case 'int':
     case 'nat':
+      if (data.type !== 'int' && data.type !== 'nat') return null;
+      if (pattern.value !== data.value) return null;
+      return substitution;
     case 'string':
       if (pattern.type !== data.type) return null;
       if (pattern.value !== data.value) return null;
@@ -57,16 +60,18 @@ export function match(
       if (pattern.name === INT_PLUS && pattern.args.length === 2) {
         if (data.type !== 'int' && data.type !== 'nat') {
           throw new Error(
-            `Type error: matching int constructor '${INT_PLUS}' against a ${data.type}`,
+            `Type error: matching int constructor '${INT_PLUS}' against a ${
+              data.type
+            } ${JSON.stringify(data)}`,
           );
         }
-        const increment = apply(substitution, pattern.args[1]);
+        const increment = apply(substitution, pattern.args[0]);
         if (increment.type !== 'int' && increment.type !== 'nat') {
           throw new Error(
             `Type error: second argument to int constructor '${INT_PLUS}' is a ${data.type}`,
           );
         }
-        return match(substitution, pattern.args[0], {
+        return match(substitution, pattern.args[1], {
           type: 'int',
           value: data.value - increment.value,
         });
@@ -85,7 +90,9 @@ export function match(
       }
       return substitution;
     case 'var':
-      if (substitution[pattern.name]) return match(substitution, substitution[pattern.name], data);
+      if (substitution[pattern.name]) {
+        return equal(substitution[pattern.name], data) ? substitution : null;
+      }
       return { [pattern.name]: data, ...substitution };
   }
 }

@@ -1,4 +1,4 @@
-import { Program, InternalPartialRule, insertFact } from './datalog';
+import { Program, InternalPartialRule, insertFact } from './engine';
 import { Declaration, Premise } from './syntax';
 import { assertData, freeVars } from './terms';
 
