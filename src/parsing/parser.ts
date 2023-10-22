@@ -19,8 +19,9 @@ export interface StreamParser<State, Tree> {
   handleEof(state: State): null | ParserResponse<State, Tree>;
 }
 
-export type Tag = 'invalid' | 'className' | 'monospace' | 'controlOperator';
+export type Tag = string;
 export interface Issue {
+  type: 'Issue';
   msg: string;
   loc: SourceLocation;
 }
@@ -33,7 +34,7 @@ export interface ParserResponse<State, Tree> {
 }
 
 /** Parse a document with the stream parser. */
-export function parse<State, Tree>(
+export function parseWithStreamParser<State, Tree>(
   parser: StreamParser<State, Tree>,
   str: string,
 ): {
