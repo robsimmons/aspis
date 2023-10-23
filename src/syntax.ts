@@ -126,7 +126,7 @@ function checkPremises(premises: Premise[]): {
   return { fv: knownFreeVars, errors };
 }
 
-export function checkDecl(decl: Declaration) {
+export function checkDecl(decl: Declaration): string[] {
   const { fv, errors } = checkPremises(decl.premises);
   switch (decl.type) {
     case 'Rule':
@@ -139,6 +139,14 @@ export function checkDecl(decl: Declaration) {
       break;
     case 'Constraint':
       break;
+  }
+  return errors;
+}
+
+export function check(decls: Declaration[]) {
+  const errors: string[] = [];
+  for (let decl of decls) {
+    errors.push(...checkDecl(decl))
   }
   return errors;
 }
